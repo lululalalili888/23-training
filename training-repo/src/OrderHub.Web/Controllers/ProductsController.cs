@@ -31,5 +31,26 @@ public class ProductsController : Controller
 
         return View(vm);
     }
+
+    public async Task<IActionResult> LowStock(LowStockListViewModel vm)
+    {
+        if (!ModelState.IsValid)
+        {
+            vm.Products = Array.Empty<LowStockRowViewModel>();
+            return View(vm);
+        }
+
+        var products = await _productService.GetLowStockAsync(vm.Threshold);
+
+        vm.Products = products.Select(p => new LowStockRowViewModel
+        {
+            Sku = p.Product.Sku,
+            Name = p.Product.Name,
+            StockQuantity = p.Product.StockQuantity,
+            QuantitySoldLast30Days = p.QuantitySoldLast30Days
+        }).ToList();
+
+        return View(vm);
+    }
 }
 
