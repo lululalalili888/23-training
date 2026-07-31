@@ -301,3 +301,34 @@ SKU-1032 曜石 機械鍵盤     4
 - Description 的角色：`low_stock` 工具的 `Description`（「列出庫存低於門檻且仍在販售的商品，
   依庫存量升冪排序」）已經把 threshold 預設值、`IsActive` 過濾、排序方向都講清楚，agent
   不用像 before 那樣自己去讀三個原始檔才拼湊出同樣的查詢條件。
+
+## 活動 2 練習 4 — 會改資料的工具：cancel_order
+
+commit `d6d81a7 feat: 新增 cancel_order MCP 工具,補唯讀工具 annotation`
+
+### 這次做的事
+
+在既有 `OrderHubTools.cs` 補上 `CancelOrder` 工具（轉接既有的
+`OrderService.CancelOrderAsync(id)`，不重新實作狀態檢查／庫存回補規則），標
+`[McpServerTool(Destructive = true, Idempotent = false)]`；同時把練習 1 遺漏的
+`[McpServerTool(ReadOnly = true)]` 補回 `GetOrder`／`LowStock`／`CustomerOrders`
+三個既有唯讀工具。
+
+### 驗證
+
+- `dotnet build src/OrderHub.Mcp` 0 warning 0 error；`dotnet test` 35/35 全綠。
+- 派 `code-reviewer` subagent 審查：沒有分層或商業邏輯重複實作的問題；唯一一個
+  可討論但不影響正確性的點——嚴格照 MCP 語意，`CancelOrder` 對已取消訂單重複呼叫
+  沒有額外副作用，理論上可以標 `Idempotent = true`；但這是練習規格明講的標註值，
+  照規格保留原樣，沒有自己改。
+- 實際呼叫 `cancel_order(id: 1)`（訂單 1 原本是 `Pending`）：回
+  `訂單 1 已取消,庫存已回補`；`get_order(1)` 確認 `Status` 變成 `Cancelled`；
+  `low_stock(threshold: 10)` 確認品項 `SKU-1032 曜石 機械鍵盤` 庫存從 4 補回 5
+  （訂單裡這個品項數量恰好是 1），三個庫存都回補，其中只有這一項原本低於門檻
+  所以看得出變化。
+- 對同一筆訂單再呼叫一次 `cancel_order(id: 1)`：回
+  `取消失敗:狀態為 Cancelled 的訂單不可取消`。
+- 挑一筆 `Shipped` 狀態的訂單（id=2）呼叫 `cancel_order`：回
+  `取消失敗:狀態為 Shipped 的訂單不可取消`。
+- 兩次失敗案例回的都是 `OrderService.CancelOrderAsync` 產生的清楚業務訊息，
+  不是 exception dump，agent 可以直接把訊息轉述給使用者，不需要瞎猜重試。
