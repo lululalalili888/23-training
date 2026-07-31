@@ -251,3 +251,53 @@ agent 回應摘要：前兩次都是自己重讀計畫、抓出並修正一些�
 
 值得保留的原因：同一句「再檢查一次」連問三次沒有用，換一個要求更具體、逼對方換方法的問法，
 才真的挑出問題——這比籠統地說「再檢查一次」更有效。
+
+---
+
+## 活動 2 練習 3 — 註冊給 agent，before/after 對照
+
+### Before（沒接 MCP）
+
+問題：「哪些商品庫存低於 5?」在沒有 `orderhub` MCP 工具的情況下（剛好利用當時 session
+還沒載入新 `.mcp.json` 的狀態實測），得自己繞四步：
+
+1. 讀 `src/OrderHub.Web/appsettings.json` 找連線字串
+   （`Server=localhost;Database=OrderHubTraining;...`）
+2. 讀 `Core/Domain/Product.cs` 確認欄位名稱（`StockQuantity`、`IsActive`）
+3. 讀 `Infrastructure/Data/OrderHubDbContext.cs` 確認 `DbSet<Product> Products` 對應
+   `Products` table
+4. 用本機已安裝的 `sqlcmd` 手寫 SQL：
+   ```sql
+   SELECT Sku, Name, StockQuantity FROM Products
+   WHERE StockQuantity < 5 AND IsActive = 1
+   ORDER BY StockQuantity ASC
+   ```
+
+執行後還踩到一個沒預期的雷：中文商品名稱在這個終端機的 `sqlcmd` 輸出裡整段變亂碼
+（試過加 `-f 65001` 也沒解決，是終端機 codepage 跟資料庫定序不合），數字和 SKU 沒事，
+但商品名稱看不懂，得另外拿 SKU 回頭對照 `/Products` 頁面才知道是哪個商品。
+總共 4 次讀檔/查證 + 1 次意外的編碼除錯，才拿到一份還不完整（名稱亂碼）的答案。
+
+### After（接上 MCP，重啟 Claude Code 後 `/mcp` 確認 `orderhub` 與三個工具都在）
+
+同一個問題，一次 `low_stock` 工具呼叫（`threshold: 5`）直接回傳結構化 JSON，
+含 SKU、中文名稱（沒有編碼問題，UTF-8 直接正確顯示）、庫存量，agent 组一個表格就答完：
+
+```
+SKU-1005 極光 筆電支架     1
+SKU-1048 晨光 行動電源     2
+SKU-1023 雲峰 27吋螢幕     3
+SKU-1014 星河 USB-C 集線器 4
+SKU-1032 曜石 機械鍵盤     4
+```
+
+### 對照心得
+
+- 步驟數：before 4 次讀檔/查證 + 1 次編碼除錯 → after 1 次工具呼叫。
+- 資料品質：before 的 SQL 邏輯其實跟 `LowStock` 工具內部查詢完全一樣（`StockQuantity <
+  threshold && IsActive`，依庫存量升冪），但因為是自己現組的，中文名稱在 console 直接亂碼；
+  MCP 工具因為在 server 端就用 `JavaScriptEncoder.UnsafeRelaxedJsonEscaping` 序列化成
+  JSON 字串回傳給 agent，同一份中文資料完全沒有終端機 codepage 的問題。
+- Description 的角色：`low_stock` 工具的 `Description`（「列出庫存低於門檻且仍在販售的商品，
+  依庫存量升冪排序」）已經把 threshold 預設值、`IsActive` 過濾、排序方向都講清楚，agent
+  不用像 before 那樣自己去讀三個原始檔才拼湊出同樣的查詢條件。
