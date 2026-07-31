@@ -332,3 +332,51 @@ commit `d6d81a7 feat: 新增 cancel_order MCP 工具,補唯讀工具 annotation`
   `取消失敗:狀態為 Shipped 的訂單不可取消`。
 - 兩次失敗案例回的都是 `OrderService.CancelOrderAsync` 產生的清楚業務訊息，
   不是 exception dump，agent 可以直接把訊息轉述給使用者，不需要瞎猜重試。
+
+## 活動 2 練習 5 — MCP 不是只有 tools：Resources 與 Prompts
+
+### 這次做的事
+
+新增 `OrderHubResources.cs`（`[McpServerResourceType]`，靜態方法 `DiscountRules()`
+回傳 `orderhub://discount-rules` 這個 markdown 文字資源）與 `OrderHubPrompts.cs`
+（`[McpServerPromptType]`，`LowStockReport(threshold)` 回傳一則 `ChatMessage`
+範本），`Program.cs` 接在 `.WithTools<OrderHubTools>()` 後面補上
+`.WithResources<OrderHubResources>()`／`.WithPrompts<OrderHubPrompts>()`。
+
+### 驗證
+
+- `dotnet build src/OrderHub.Mcp`：這次建置會撞到自己這個對話目前正在用的
+  `orderhub` 連線本身鎖住 `bin` 資料夾（`OrderHub.Mcp.exe` PID 12336——這個不能
+  killed，因為砍了就等於砍斷自己這個 session 正在用的 MCP server），改用
+  `dotnet build ... -o <scratch 目錄>` 建到別的輸出路徑，繞開鎖定，0 warning 0 error。
+- 派 `code-reviewer` subagent 核對 `OrderHubResources.cs` 裡硬寫的折扣文字
+  （Standard 不打折／Silver 95 折／Gold 9 折）對照 `OrderService.GetDiscountRate`
+  （`Gold => 0.10m`／`Silver => 0.05m`）：目前數字一致，沒有寫錯，但這份 resource
+  是獨立字串，跟 `GetDiscountRate` 之間沒有任何連結——`OrderService` 以後改折扣率，
+  這份 resource 不會自動跟著變，也沒有測試會抓到這個 drift。
+- Resource／Prompt 都沒有碰 `DbContext`／repository／service，純靜態內容，分層沒問題。
+
+### 5c 第 3 點的思考
+
+**折扣規則用 Resource 給，和讓 agent 自己去讀 `OrderService.cs`，差在哪？**
+讀程式碼這條路每次都要重新花 token 去找 `GetDiscountRate` 這個方法、貼上完整
+方法本體，且商業邏輯程式碼本來就不是寫給人看規則用的（`Gold => 0.10m` 要自己
+換算成「9 折」）；Resource 是專門為了「講給 agent 聽」而寫的一段人類可讀說明，
+一次寫好、每次 `@` 選取就直接可用，agent 不用自己爬程式碼、也不會不小心把整個
+`OrderService.cs` 其他不相關的方法也一起讀進 context。**代價**：這次 code review
+就指出這正是「兩份真相」——這份 resource 目前是手寫死的字串，跟
+`GetDiscountRate` 之間沒有任何程式碼連結，`OrderService` 改了折扣率不會自動反映
+在 resource 上。比較安全的做法是把 `OrderHubResources` 也改成注入
+`IOrderService`（跟 `OrderHubTools` 一樣的 DI 寫法），用 `GetDiscountRate(tier)`
+現算組字串，而不是寫死百分比——這次為了照練習規格先用最簡單的靜態字串版本，
+沒有做這一步，記在這裡當作已知的技術債／後續可以做的加強。
+
+**prompt 範本放在 server，和每個人自己打一段話，差在哪？**
+`low_stock_report` 這段話（用哪個 tool、參數是什麼、輸出表格要哪幾欄）只要
+寫進 `OrderHubPrompts.cs` 一次，所有用這個 MCP server 的人（採購同事、其他工程師）
+都拿到同一份、有版本控制（跟著 repo 走，改一次全部人生效，PR 審查看得到 diff）；
+自己每次手打的話，措辭、要求的欄位很容易每次都不一樣，同事間問出來的報告格式
+也會不一致，而且沒有地方可以看出「這句話上週改過」。差異的核心跟折扣規則那題
+一樣：規則／範本要改版時，Resource／Prompt 只需要改 server 端這一個地方，
+所有 client 下次呼叫就自動拿到新版；手動維護（自己讀程式碼算折扣、自己每次
+打一段類似的話）則是改幾次就要手動同步幾次，改版成本隨使用人數線性增加。
