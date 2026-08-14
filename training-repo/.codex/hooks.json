@@ -1,0 +1,31 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "powershell -NoProfile -File .codex/hooks/block-secrets-read.ps1"
+          },
+          {
+            "type": "command",
+            "command": "powershell -NoProfile -File .codex/hooks/block-destructive-sql.ps1"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "apply_patch",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "powershell -NoProfile -File .codex/hooks/log-edits-codex.ps1",
+            "statusMessage": "Logging file edit..."
+          }
+        ]
+      }
+    ]
+  }
+}

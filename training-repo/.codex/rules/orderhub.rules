@@ -1,0 +1,38 @@
+# ---- 危險操作：直接擋掉 ----
+prefix_rule(
+    pattern = ["rm", "-rf"],
+    decision = "forbidden",
+    justification = "禁止遞迴強制刪除",
+)
+prefix_rule(
+    pattern = ["git", "push", "--force"],
+    decision = "forbidden",
+    justification = "禁止強推，需要時請人工操作",
+)
+prefix_rule(
+    pattern = ["git", "reset", "--hard"],
+    decision = "forbidden",
+    justification = "會丟失未 commit 的變更",
+)
+
+# ---- 重大操作：強制詢問 ----
+prefix_rule(
+    pattern = ["dotnet", "ef", "database", "drop"],
+    decision = "prompt",
+    justification = "重置資料庫必須由人確認",
+)
+prefix_rule(
+    pattern = ["git", "push"],
+    decision = "prompt",
+    justification = "推上遠端前先確認",
+)
+
+# ---- 日常操作：直接放行 ----
+prefix_rule(pattern = ["dotnet", "build"], decision = "allow", justification = "日常建置")
+prefix_rule(pattern = ["dotnet", "test"],  decision = "allow", justification = "日常測試")
+prefix_rule(pattern = ["dotnet", "run"],   decision = "allow", justification = "啟動網站")
+prefix_rule(pattern = ["git", "status"],   decision = "allow", justification = "唯讀")
+prefix_rule(pattern = ["git", "diff"],     decision = "allow", justification = "唯讀")
+prefix_rule(pattern = ["git", "log"],      decision = "allow", justification = "唯讀")
+prefix_rule(pattern = ["git", "add"],      decision = "allow", justification = "日常提交流程")
+prefix_rule(pattern = ["git", "commit"],   decision = "allow", justification = "日常提交流程")

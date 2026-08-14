@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using OrderHub.Core.Ai;
 using OrderHub.Core.Domain;
 using OrderHub.Core.Services;
 using OrderHub.Infrastructure.Data;
@@ -24,6 +25,9 @@ public static class TestSetup
 
     public static ProductService CreateProductService(OrderHubDbContext db) =>
         new(new ProductRepository(db));
+
+    public static OrderSearchService CreateOrderSearchService(OrderHubDbContext db, IOrderQueryTranslator translator) =>
+        new(translator, new OrderRepository(db));
 
     public static Customer AddCustomer(OrderHubDbContext db, CustomerTier tier = CustomerTier.Standard, string name = "測試客戶")
     {
