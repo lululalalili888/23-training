@@ -380,3 +380,87 @@ commit `d6d81a7 feat: 新增 cancel_order MCP 工具,補唯讀工具 annotation`
 一樣：規則／範本要改版時，Resource／Prompt 只需要改 server 端這一個地方，
 所有 client 下次呼叫就自動拿到新版；手動維護（自己讀程式碼算折扣、自己每次
 打一段類似的話）則是改幾次就要手動同步幾次，改版成本隨使用人數線性增加。
+
+## 活動 4 — n8n 自動化
+
+### MCP server 加開 HTTP transport
+
+commit `ce0afd0`：`OrderHub.Mcp` 加 `--http` 參數，`WithHttpTransport(Stateless=true)` 監聽
+`http://localhost:3001`，工具／Resource／Prompt 註冊完全不動，stdio 版（`.mcp.json` 用的
+那個）不受影響。用 `tools/list`／`resources/list`／`prompts/list` 直接打 HTTP 端點驗證過，
+四個工具（含 annotations）、`discount-rules` resource、`low_stock_report` prompt 都正常回傳。
+
+### 練習 2 — 如果「查什麼、怎麼查」也交給 AI Agent 自由發揮，會失去什麼？
+
+這條 workflow 的查詢完全沒有交給 AI 決定：n8n 的 HTTP Request 節點固定打
+`POST /api/orders/search`，body 固定是 `{"text": "過去 30 天取消的訂單"}`，AI Agent
+拿到的已經是這支 API 查完的 JSON 結果，只負責摘要成中文日報，不負責「決定要查什麼」。
+這支 API（活動 3 做的）內部也不是把使用者輸入直接組進 SQL：
+
+```csharp
+// OrderSearchService.SearchAsync
+var parsed = await _translator.TranslateAsync(query, cancellationToken);
+// 白名單防線：翻譯失敗、意圖不是查詢、或沒有任何有效條件，一律拒絕
+if (parsed is null || !parsed.HasAnyFilter)
+    return ServiceResult<IReadOnlyList<Order>>.Fail("無法理解的查詢");
+```
+
+LLM 只能產生 `OrderSearchQuery` 這個固定形狀的白名單參數（`Status`／`MemberTier`／
+`DateFrom`／`DateTo`），真正的 SQL 一律由 EF Core 從這幾個型別化欄位生成，模型完全碰不到
+查詢語句本身。
+
+如果把「查什麼、怎麼查」這件事也交給 n8n 裡的 AI Agent 自由發揮（例如讓它自己決定要打
+哪支 API、帶什麼參數、甚至自己組 SQL），會失去：
+
+- **白名單防線失效**：`OrderSearchQuery` 這層型別化參數的意義就是「LLM 只能從這幾個
+  欄位挑，碰不到原始查詢語句」；一旦讓 agent 自由組查詢條件（甚至讓它自己拼 SQL 片段），
+  這層防線等於繞過，query 注入或撈出白名單以外欄位的風險就回來了。
+- **可測試性**：現在 `SearchAsync` 是純函式般的行為——同樣的 `text` 輸入，透過
+  `IOrderQueryTranslator` 轉出同一組 `OrderSearchQuery`，可以寫單元測試釘住「這句話應該
+  轉成哪些欄位」。如果查詢邏輯散在 agent 每次的即興決策裡，同一句話兩次執行可能問不同的
+  API、帶不同參數，沒有固定行為可以寫回歸測試。
+- **日報數字的可信度**：這次 IF 節點判斷「要不要開 issue」用的是
+  `$('整理筆數').first().json.count`——一個由「固定查詢」→「固定 API」→「固定 Code 節點
+  數 `orders.length`」算出來、可回溯、可重算的數字。如果連「要不要查、查哪個時間範圍」
+  都交給 agent 自己決定，這個 `count` 就不再是可驗證的固定值，日報上「總筆數 2 筆」也就
+  失去了「對照 `/Orders` 頁面篩選結果應該完全一致」這個驗證基準（練習 2 驗證清單的第一條）。
+
+### 練習 3 — 同一批退單，有深挖 vs 沒深挖的日報差異
+
+同一批「過去 30 天取消的訂單」（訂單 137 陳志明 Gold、訂單 4 徐若瑄 Standard），
+在加上 MCP `get_order` 工具前後兩次執行，AI Agent 產出的日報明顯不同：
+
+**沒深挖（練習 2，只有 search API 的摘要欄位：id/customerName/tier/status/total/createdAt）：**
+
+> 本日共有 2 筆取消訂單，總金額達 20,528 元，包含一位黃金會員退單。
+> **總筆數**：2 筆　**總金額**：20,528 元
+> **值得注意的訂單**：訂單編號 137：陳志明 (Gold) - 13,608 元／訂單編號 4：徐若瑄 (Standard) - 6,920 元
+
+**有深挖（練習 3，AI Agent 額外呼叫 `get_order(137)`、`get_order(4)`）：**
+
+> 近 30 天共有 2 筆取消訂單，總金額 20,528 元，包含一位金級會員。
+> 1. 陳志明 (訂單編號 137) - 會員等級: 金級, 訂單金額: 13,608 元 (享 10% 會員折扣)
+>    品項明細: 曙光 無線滑鼠 x1、星河 USB-C 集線器 x2、星河 USB-C 集線器 x2
+> 2. 徐若瑄 (訂單編號 4) - 會員等級: 普通, 訂單金額: 6,920 元
+>    品項明細: 曙石 HDMI 傳輸線 x2、曙石 星上麥克風 x2、曙光 無線滑鼠 x2
+
+差異的根源：`search` API 回傳的欄位裡本來就沒有品項明細（只有訂單層級的彙總數字），
+所以沒接 MCP 時 AI Agent 巧婦難為無米之炊，只能重述 search API 給的六個欄位；接上
+`get_order` 之後，日報才能引用「品項明細」「10% 會員折扣」這種要另外查訂單明細才拿得到的
+真實資訊。用 Executions 的 log 也直接看得到 `OrderHub MCP` 節點被呼叫了兩次
+（input `{id: 137}`、`{id: 4}`），output 是 `get_order` 回傳的完整品項 JSON——不是 AI 憑
+訂單編號腦補出來的品項名稱。
+
+### 過程中踩到的坑
+
+- n8n session 中途過期（大約半小時後）會讓畫布看起來一切正常、也能編輯，但改動其實
+  沒有真的存進後端；reload 後節點就消失。後來都改用 n8n 的 `/rest/workflows/:id`
+  API（`browser-id` header 用 `localStorage.getItem('n8n-browserId')` 取得）直接讀寫
+  workflow JSON 來繞開畫布互動的不可靠。
+- 「Listen for test event」（在單一節點的設定面板裡按）只會測那一顆節點本身，不會往
+  下游跑；要測完整鏈路要用畫布上的「Execute workflow」按鈕，或 Activate 後打
+  Production URL。
+- `models/gemini-2.5-flash` 已經下架（404 "no longer available to new users"），要改用
+  `models/gemini-3-flash-preview`。
+- GitHub repo 預設可能關閉 Issues 功能，`GitHub` 節點建立 issue 前要先到
+  repo 的 Settings → General → Features 打開 Issues。
